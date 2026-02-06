@@ -1,0 +1,66 @@
+{
+  "id": "lakera-guard",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "description": "Lakera Guard API key (Bearer token). Generate one at https://platform.lakera.ai"
+      },
+      "projectId": {
+        "type": "string",
+        "description": "Optional Lakera project ID. Uses the default policy if omitted."
+      },
+      "endpoint": {
+        "type": "string",
+        "description": "Lakera Guard API endpoint. Defaults to https://api.lakera.ai/v2/guard"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["block", "log"],
+        "description": "block = reject flagged tool calls; log = log warnings but allow execution. Defaults to block."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "description": "HTTP timeout in milliseconds for Lakera API calls. Defaults to 5000."
+      },
+      "skipTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Tool names to skip screening (e.g. low-risk read-only tools)."
+      }
+    },
+    "required": ["apiKey"]
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "API Key",
+      "help": "Your Lakera Guard API key (sk_…)",
+      "sensitive": true
+    },
+    "projectId": {
+      "label": "Project ID",
+      "help": "Optional project ID to use a specific Lakera policy"
+    },
+    "endpoint": {
+      "label": "API Endpoint",
+      "help": "Override the default Lakera Guard API URL",
+      "advanced": true
+    },
+    "mode": {
+      "label": "Mode",
+      "help": "block = reject flagged calls, log = warn-only"
+    },
+    "timeoutMs": {
+      "label": "Timeout (ms)",
+      "help": "Max wait for Lakera API response",
+      "advanced": true
+    },
+    "skipTools": {
+      "label": "Skip Tools",
+      "help": "Comma-separated tool names excluded from screening",
+      "advanced": true
+    }
+  }
+}

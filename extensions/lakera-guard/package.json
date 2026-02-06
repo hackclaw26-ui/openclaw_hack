@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/lakera-guard",
+  "version": "1.0.0",
+  "description": "Lakera Guard guardrail plugin – screens tool calls for prompt injection and other threats via the Lakera Guard API",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.26"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

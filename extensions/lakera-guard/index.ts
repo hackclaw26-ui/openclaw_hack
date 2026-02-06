@@ -1,9 +1,14 @@
 /**
  * Lakera Guard plugin for OpenClaw.
  *
- * Registers a `before_tool_call` hook that screens every tool call through
- * the Lakera Guard API. If the call is flagged (prompt injection, jailbreak,
- * PII leak, etc.) the tool call is blocked before execution.
+ * Registers two hooks:
+ *   1. `before_tool_call` – screens every tool call *before* execution.
+ *      Catches prompt injection, jailbreak attempts, etc. in tool parameters.
+ *   2. `after_tool_call`  – screens every tool result *after* execution.
+ *      Catches PII leaks, data exfiltration, and malicious content in outputs.
+ *
+ * In both cases, flagged calls/results are blocked (or logged, depending on
+ * the configured mode).
  *
  * Configuration (via `openclaw config set plugins.entries.lakera-guard`):
  *   apiKey      – (required) Lakera Guard API key
@@ -15,7 +20,7 @@
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { screenContent, summarizeVerdict } from "./src/lakera-client.js";
+import { screenContent, screenToolResult, summarizeVerdict } from "./src/lakera-client.js";
 import type { LakeraGuardConfig } from "./src/lakera-client.js";
 
 type PluginConfig = {
@@ -47,7 +52,7 @@ const lakeraGuardPlugin = {
   id: "lakera-guard",
   name: "Lakera Guard",
   description:
-    "Screens tool calls through the Lakera Guard API to block prompt injection, jailbreaks, and other threats.",
+    "Screens tool calls and their results through the Lakera Guard API to block prompt injection, jailbreaks, PII leaks, and other threats.",
 
   register(api: OpenClawPluginApi) {
     const cfg = resolveConfig(api.pluginConfig);
@@ -120,6 +125,60 @@ const lakeraGuardPlugin = {
         return undefined;
       },
       // Run with high priority so this guardrail executes before other hooks
+      { priority: 1000 },
+    );
+
+    // -----------------------------------------------------------------------
+    // after_tool_call hook – runs after every tool execution to screen output
+    // -----------------------------------------------------------------------
+    api.on(
+      "after_tool_call",
+      async (event, ctx) => {
+        const { toolName, params, result, error } = event;
+
+        // Allow explicitly skipped tools through without screening
+        if (skipSet.has(toolName)) {
+          return;
+        }
+
+        // Skip screening when the tool itself errored – nothing sensitive to leak
+        if (error && !result) {
+          return;
+        }
+
+        try {
+          const verdict = await screenToolResult(lakeraConfig, toolName, params, result, error);
+          const summary = summarizeVerdict(verdict);
+
+          if (verdict.flagged) {
+            const logMsg =
+              `Lakera Guard flagged tool result: tool=${toolName} ` +
+              `session=${ctx.sessionKey ?? "?"} verdict=${summary} ` +
+              `request=${verdict.metadata?.request_uuid ?? "?"}`;
+
+            if (mode === "block") {
+              api.logger.warn(`${logMsg} → BLOCKED`);
+              return {
+                block: true,
+                blockReason:
+                  `Tool result blocked by Lakera Guard (${summary}). ` +
+                  "The tool output was identified as potentially containing sensitive or malicious content.",
+              };
+            }
+
+            // log-only mode
+            api.logger.warn(`${logMsg} → ALLOWED (log-only mode)`);
+          }
+        } catch (err) {
+          // Fail open on API errors – log a warning for operators.
+          api.logger.error(
+            `Lakera Guard result screening failed for tool=${toolName}: ${String(err)} – allowing result (fail-open)`,
+          );
+        }
+
+        return undefined;
+      },
+      // Same high priority as the before hook
       { priority: 1000 },
     );
   },

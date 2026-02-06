@@ -64,6 +64,59 @@ export async function runBeforeToolCallHook(args: {
   return { blocked: false, params };
 }
 
+type AfterHookOutcome = { blocked: true; reason: string } | { blocked: false };
+
+/**
+ * Run after_tool_call plugin hooks. Returns a block verdict when a guardrail
+ * flags the tool result (e.g. sensitive data in the output).
+ */
+export async function runAfterToolCallHook(args: {
+  toolName: string;
+  params: unknown;
+  result?: unknown;
+  error?: string;
+  durationMs?: number;
+  toolCallId?: string;
+  ctx?: HookContext;
+}): Promise<AfterHookOutcome> {
+  const hookRunner = getGlobalHookRunner();
+  if (!hookRunner?.hasHooks("after_tool_call")) {
+    return { blocked: false };
+  }
+
+  const toolName = normalizeToolName(args.toolName || "tool");
+  const params = isPlainObject(args.params) ? args.params : {};
+
+  try {
+    const hookResult = await hookRunner.runAfterToolCall(
+      {
+        toolName,
+        params,
+        result: args.result,
+        error: args.error,
+        durationMs: args.durationMs,
+      },
+      {
+        toolName,
+        agentId: args.ctx?.agentId,
+        sessionKey: args.ctx?.sessionKey,
+      },
+    );
+
+    if (hookResult?.block) {
+      return {
+        blocked: true,
+        reason: hookResult.blockReason || "Tool result blocked by plugin hook",
+      };
+    }
+  } catch (err) {
+    const toolCallId = args.toolCallId ? ` toolCallId=${args.toolCallId}` : "";
+    log.warn(`after_tool_call hook failed: tool=${toolName}${toolCallId} error=${String(err)}`);
+  }
+
+  return { blocked: false };
+}
+
 export function wrapToolWithBeforeToolCallHook(
   tool: AnyAgentTool,
   ctx?: HookContext,
@@ -76,21 +129,57 @@ export function wrapToolWithBeforeToolCallHook(
   return {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate) => {
-      const outcome = await runBeforeToolCallHook({
+      // --- before_tool_call: may block or modify params ---
+      const beforeOutcome = await runBeforeToolCallHook({
         toolName,
         params,
         toolCallId,
         ctx,
       });
-      if (outcome.blocked) {
-        throw new Error(outcome.reason);
+      if (beforeOutcome.blocked) {
+        throw new Error(beforeOutcome.reason);
       }
-      return await execute(toolCallId, outcome.params, signal, onUpdate);
+
+      // --- execute the tool ---
+      const start = Date.now();
+      let result: Awaited<ReturnType<typeof execute>>;
+      let error: string | undefined;
+      try {
+        result = await execute(toolCallId, beforeOutcome.params, signal, onUpdate);
+      } catch (err) {
+        error = String(err);
+        // Run after hook even on errors so guardrails can observe failures
+        await runAfterToolCallHook({
+          toolName,
+          params: beforeOutcome.params as Record<string, unknown>,
+          error,
+          durationMs: Date.now() - start,
+          toolCallId,
+          ctx,
+        });
+        throw err;
+      }
+
+      // --- after_tool_call: may block the result ---
+      const afterOutcome = await runAfterToolCallHook({
+        toolName,
+        params: beforeOutcome.params as Record<string, unknown>,
+        result,
+        durationMs: Date.now() - start,
+        toolCallId,
+        ctx,
+      });
+      if (afterOutcome.blocked) {
+        throw new Error(afterOutcome.reason);
+      }
+
+      return result;
     },
   };
 }
 
 export const __testing = {
   runBeforeToolCallHook,
+  runAfterToolCallHook,
   isPlainObject,
 };
